@@ -13,6 +13,8 @@ jobs:
       SF18_TAG: sf_18
       SF18_ARM64_SHA: cc3b3b74466b6d85cdc0f8cfdad4111c6a44bd0698f4eab96fea7b359a54d3d4
       SF18_ARMV7_SHA: 672fbd7533d15fc70dae82df52c1185236975d059a585aa65eda960f1a3266ea
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - uses: actions/checkout@v4
@@ -23,8 +25,23 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Locate Android SDK
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls -la "$ANDROID_HOME"
+          find "$ANDROID_HOME" -maxdepth 3 -type f -name sdkmanager -print
+
+      - name: Setup Android SDK packages
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME" -type f -name sdkmanager | head -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found in $ANDROID_HOME"
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -46,15 +63,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p sf-cache
-          curl -fL -o sf-cache/arm64.tar  https://github.com/official-stockfish/Stockfish/releases/download/${{ env.SF18_TAG }}/stockfish-android-armv8.tar
-          curl -fL -o sf-cache/armv7.tar  https://github.com/official-stockfish/Stockfish/releases/download/${{ env.SF18_TAG }}/stockfish-android-armv7-neon.tar
-          cd sf-cache
-          tar xf arm64.tar
-          tar xf armv7.tar
-          mv stockfish/stockfish-android-armv8       libstockfish-arm64.so
-          mv stockfish/stockfish-android-armv7-neon  libstockfish-armv7.so
-          rm -rf stockfish arm64.tar armv7.tar
-          ls -la
+          curl -fL -o sf-cache/arm64.tar \
+            "https://github.com/official-stockfish/Stockfish/releases/download/${SF18_TAG}/stockfish-android-armv8.tar"
+          curl -fL -o sf-cache/armv7.tar \
+            "https://github.com/official-stockfish/Stockfish/releases/download/${SF18_TAG}/stockfish-android-armv7-neon.tar"
+          mkdir -p sf-cache/extract-arm64 sf-cache/extract-armv7
+          tar xf sf-cache/arm64.tar -C sf-cache/extract-arm64
+          tar xf sf-cache/armv7.tar -C sf-cache/extract-armv7
+          find sf-cache/extract-arm64 sf-cache/extract-armv7 -type f
+          ARM64_BIN="$(find sf-cache/extract-arm64 -type f -name 'stockfish-android-armv8' | head -n 1)"
+          ARMV7_BIN="$(find sf-cache/extract-armv7 -type f -name 'stockfish-android-armv7-neon' | head -n 1)"
+          test -n "$ARM64_BIN"
+          test -n "$ARMV7_BIN"
+          cp "$ARM64_BIN" sf-cache/libstockfish-arm64.so
+          cp "$ARMV7_BIN" sf-cache/libstockfish-armv7.so
+          rm -rf sf-cache/extract-arm64 sf-cache/extract-armv7 sf-cache/arm64.tar sf-cache/armv7.tar
+          ls -lh sf-cache
 
       - name: Verify SHA256
         run: |
@@ -65,10 +89,11 @@ jobs:
 
       - name: Install Stockfish 18 into jniLibs
         run: |
+          set -euo pipefail
           mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/armeabi-v7a
-          cp sf-cache/libstockfish-arm64.so  app/src/main/jniLibs/arm64-v8a/libstockfish.so
-          cp sf-cache/libstockfish-armv7.so  app/src/main/jniLibs/armeabi-v7a/libstockfish.so
-          ls -la app/src/main/jniLibs/*/
+          cp sf-cache/libstockfish-arm64.so app/src/main/jniLibs/arm64-v8a/libstockfish.so
+          cp sf-cache/libstockfish-armv7.so app/src/main/jniLibs/armeabi-v7a/libstockfish.so
+          ls -lh app/src/main/jniLibs/*/
 
       - name: Build debug APK splits
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
